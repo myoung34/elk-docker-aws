@@ -1,0 +1,212 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Curator runner",
+    "Parameters": {
+        "CpuUnits": {
+            "Type": "Number",
+            "Default": 0,
+            "Description": "The number of CPU Units to allocate."
+        },
+        "Memory": {
+            "Type": "Number",
+            "Default": 256,
+            "Description": "The amount of Memory (MB) to allocate."
+        },
+        "SslEnabled": {
+            "Type": "String",
+            "Description": "Whether or not to connect to elasticsearch using SSL",
+            "Default": "true"
+        },
+        "ElasticsearchHost": {
+            "Type": "String",
+            "Description": "The hostname of the elasticsearch host"
+        },
+        "ClusterName": {
+            "Type": "String",
+            "Description": "The cluster to run the ecs tasks on."
+        },
+        "CuratorDockerImageUrl": {
+            "Type": "String",
+            "Description": "The URL for the logstash docker image. Example: 354500939573.dkr.ecr.us-east-1.amazonaws.com/logstash:latest"
+        }
+    },
+    "Resources": {
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": [
+                                "lambda.amazonaws.com"
+                            ]
+                        },
+                        "Action": [
+                            "sts:AssumeRole"
+                        ]
+                    }]
+                },
+                "Policies": [{
+                    "PolicyName": "ecsruntask",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": "ecs:RunTask",
+                            "Resource": "*"
+                        }]
+                    }
+                }],
+                "Path": "/"
+            }
+        },
+        "LambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": [
+                      "LambdaRole",
+                      "Arn"
+                    ]
+
+                },
+                "Runtime": "nodejs4.3",
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": ["", [
+                            "var aws = require('aws-sdk');",
+                            "var ecs = new aws.ECS({apiVersion: '2014-11-13'});",
+                            "",
+                            "var callEcs = function callEcs(task, cluster) {",
+                            "    var params = {",
+                            "        taskDefinition: task,",
+                            "        cluster: cluster,",
+                            "        count: 1",
+                            "    };",
+                            "    console.log('Running task ' + task);",
+                            "    return ecs.runTask(params).promise();",
+                            "};",
+                            "",
+                            "exports.handler = function(event, context) {",
+                            "    console.log('Received event:');",
+                            "    console.log(JSON.stringify(event, null, '  '));",
+                            "    var cluster = '", {
+                                "Ref": "ClusterName"
+                            }, "';",
+                            "    var warmTask = /\\/(.*):\\d/.exec('", {
+                                "Ref": "RotateWarmTask"
+                            }, "')[1];",
+                            "    var deleteTask = /\\/(.*):\\d/.exec('", {
+                                "Ref": "DeleteTask"
+                            }, "')[1];",
+                            "",
+                            "    callEcs(warmTask,cluster).then(callEcs(deleteTask, cluster));",
+                            "};"
+                        ]]
+                    }
+                },
+                "Runtime": "nodejs4.3"
+            }
+        },
+        "RotateWarmTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Properties": {
+                "ContainerDefinitions": [{
+                    "Command": [
+                        "curator",
+                        "allocation",
+                        "--rule",
+                        "box_type=warm",
+                        "indices",
+                        "--time-unit",
+                        "days",
+                        "--older-than",
+                        "0",
+                        "--newer-than",
+                        "13",
+                        "--timestring",
+                        "%Y.%m.%d"
+                    ],
+                    "Memory": {
+                        "Ref": "Memory"
+                    },
+                    "Name": {
+                        "Ref": "AWS::StackName"
+                    },
+                    "Image": {
+                        "Ref": "CuratorDockerImageUrl"
+                    },
+                    "Cpu": {
+                        "Ref": "CpuUnits"
+                    },
+                    "Environment": [{
+                        "Name": "SSL_ENABLED",
+                        "Value": {
+                            "Ref": "SslEnabled"
+                        }
+                    }, {
+                        "Name": "ELASTICSEARCH_HOST",
+                        "Value": {
+                            "Ref": "ElasticsearchHost"
+                        }
+                    }]
+                }],
+                "Volumes": []
+            }
+        },
+        "DeleteTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Properties": {
+                "ContainerDefinitions": [{
+                    "Command": [
+                        "curator",
+                        "delete",
+                        "indices",
+                        "--time-unit",
+                        "days",
+                        "--older-than",
+                        "14",
+                        "--timestring ",
+                        "%Y.%m.%d"
+                    ],
+                    "Memory": {
+                        "Ref": "Memory"
+                    },
+                    "Name": "curator-elasticsearch",
+                    "Image": {
+                        "Ref": "CuratorDockerImageUrl"
+                    },
+                    "Cpu": {
+                        "Ref": "CpuUnits"
+                    },
+                    "Environment": [{
+                        "Name": "SSL_ENABLED",
+                        "Value": {
+                            "Ref": "SslEnabled"
+                        }
+                    }, {
+                        "Name": "ELASTICSEARCH_HOST",
+                        "Value": {
+                            "Ref": "ElasticsearchHost"
+                        }
+                    }]
+                }],
+                "Volumes": []
+            }
+        }
+    },
+    "Outputs": {
+        "WarmTask": {
+            "Value": {
+                "Ref": "RotateWarmTask"
+            }
+        },
+        "DeleteTask": {
+            "Value": {
+                "Ref": "DeleteTask"
+            }
+        }
+    }
+}

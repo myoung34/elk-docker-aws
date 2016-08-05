@@ -1,0 +1,161 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Logstash ECS task/service definition with ELB.",
+    "Parameters": {
+        "ECSCluster": {
+            "Type": "String",
+            "Description": "Name of an existing ECS Cluster to run the task and service on"
+        },
+        "SubnetId": {
+            "Type": "List<AWS::EC2::Subnet::Id>",
+            "Description": "List of an existing subnet IDs to use for the load balancer and auto scaling group"
+        },
+        "ElasticSearchHost": {
+            "Type": "String",
+            "Description": "The Hostname of the elasticsearch endpoint including protocol and port. Example: 'https://foo.com:9200'"
+        },
+        "LogstashDockerImageUrl": {
+            "Type": "String",
+            "Description": "The URL for the logstash docker image. Example: 354500939573.dkr.ecr.us-east-1.amazonaws.com/logstash:latest"
+        },
+        "CertificateARN": {
+            "Type": "String",
+            "Description": "The ARN of the SSL Certificate to use for the load balancer"
+        },
+        "SecurityGroups": {
+            "Description": "EC2 security group id to use",
+            "Type": "List<AWS::EC2::SecurityGroup::Id>"
+        }
+    },
+    "Resources": {
+        "taskdefinition": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Properties": {
+                "ContainerDefinitions": [{
+                    "Memory": 1024,
+                    "PortMappings": [{
+                        "HostPort": 5000,
+                        "ContainerPort": 5000,
+                        "Protocol": "tcp"
+                    }],
+                    "Essential": true,
+                    "Name": "logstash",
+                    "Environment": [
+                      {
+                        "Name": "ELASTICSEARCH_HOST",
+                        "Value": {
+                            "Ref": "ElasticSearchHost"
+                        }
+                      }
+                    ],
+                    "Image": {
+                        "Ref": "LogstashDockerImageUrl"
+                    },
+                    "Cpu": 512
+                }],
+                "Volumes": []
+            }
+        },
+        "service": {
+            "Type": "AWS::ECS::Service",
+            "Properties": {
+                "Cluster": {
+                    "Ref": "ECSCluster"
+                },
+                "DesiredCount": "1",
+                "LoadBalancers": [{
+                    "ContainerName": "logstash",
+                    "ContainerPort": "5000",
+                    "LoadBalancerName": {
+                        "Ref": "EcsElasticLoadBalancer"
+                    }
+                }],
+                "Role": {
+                    "Ref": "ECSServiceRole"
+                },
+                "TaskDefinition": {
+                    "Ref": "taskdefinition"
+                }
+            }
+        },
+        "EcsElasticLoadBalancer": {
+            "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+            "Properties": {
+                "Scheme": "internal",
+                "Listeners": [{
+                    "LoadBalancerPort": "5000",
+                    "InstancePort": "5000",
+                    "InstanceProtocol": "TCP",
+                    "Protocol": "TCP",
+                    "SSLCertificateId": { "Ref": "CertificateARN" }
+                }],
+                "Subnets": {
+                    "Ref": "SubnetId"
+                },
+                "SecurityGroups": {
+                    "Ref": "SecurityGroups"
+                },
+                "HealthCheck" : {
+                    "Target" : "TCP:5000",
+                    "HealthyThreshold" : "3",
+                    "UnhealthyThreshold" : "5",
+                    "Interval" : "6",
+                    "Timeout" : "5"
+                }
+            }
+        },
+        "ECSServiceRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": [
+                                "ecs.amazonaws.com"
+                            ]
+                        },
+                        "Action": [
+                            "sts:AssumeRole"
+                        ]
+                    }]
+                },
+                "Path": "/",
+                "Policies": [{
+                    "PolicyName": "ecs-service",
+                    "PolicyDocument": {
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": [
+                                "elasticloadbalancing:Describe*",
+                                "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                                "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                                "ec2:Describe*",
+                                "ec2:AuthorizeSecurityGroupIngress"
+                            ],
+                            "Resource": "*"
+                        }]
+                    }
+                }]
+            }
+        }
+    },
+    "Outputs": {
+        "ecsservice": {
+            "Value": {
+                "Ref": "service"
+            }
+        },
+        "taskdef": {
+            "Value": {
+                "Ref": "taskdefinition"
+            }
+        },
+        "LogstashLoadBalancerDNSName": {
+            "Description": "The DNSName of the logstash load balancer",
+            "Value": {
+                "Fn::GetAtt": ["EcsElasticLoadBalancer", "DNSName"]
+            }
+        }
+    }
+}

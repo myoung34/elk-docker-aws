@@ -1,0 +1,13 @@
+discovery:
+  type: ec2
+discovery.zen.ping.multicast.enabled: false
+cluster.name: ${CLUSTER}
+network.publish_host: ${LOCAL_IP}
+network.host: 0.0.0.0
+node.master: true
+node.data: true
+http.publish_port: 9200
+http.port: 19200
+node.box_type: ${NODE_TYPE}
+index.number_of_shards: 2
+index.number_of_replicas: 0

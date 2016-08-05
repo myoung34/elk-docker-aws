@@ -1,0 +1,174 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Logstash ECS task/service definition with ELB.",
+    "Parameters": {
+        "ECSCluster": {
+            "Type": "String",
+            "Description": "Name of an existing ECS Cluster to run the task and service on"
+        },
+        "SubnetId": {
+            "Type": "List<AWS::EC2::Subnet::Id>",
+            "Description": "List of an existing subnet IDs to use for the load balancer and auto scaling group"
+        },
+        "ESDockerImageUrl": {
+            "Type": "String",
+            "Description": "The URL for the logstash docker image. Example: 354500939573.dkr.ecr.us-east-1.amazonaws.com/logstash:latest"
+        },
+        "CertificateARN": {
+            "Type": "String",
+            "Description": "The ARN of the SSL Certificate to use for the load balancer"
+        },
+        "ClusterName": {
+            "Type": "String",
+            "Description": "The name of the ECS cluster"
+        },
+        "ESCount": {
+            "Type": "String",
+            "Description": "The number of Elasticsearch nodes to create",
+            "Default": "2"
+        }
+    },
+    "Resources": {
+
+        "taskdefinition": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Properties": {
+                "ContainerDefinitions": [{
+                    "Memory": 512,
+                    "PortMappings": [{
+                        "HostPort": 9200,
+                        "ContainerPort": 9200,
+                        "Protocol": "tcp"
+                    }, {
+                        "HostPort": 9201,
+                        "ContainerPort": 9201,
+                        "Protocol": "tcp"
+                    }, {
+                        "HostPort": 9300,
+                        "ContainerPort": 9300,
+                        "Protocol": "tcp"
+                    }, {
+                        "HostPort": 9400,
+                        "ContainerPort": 9400,
+                        "Protocol": "tcp"
+                    }],
+                    "Environment": [{
+                        "Name": "CLUSTER",
+                        "Value": {
+                            "Ref": "ClusterName"
+                        }
+                    }],
+                    "Essential": true,
+                    "Name": "elasticsearch",
+                    "Image": {
+                        "Ref": "ESDockerImageUrl"
+                    },
+                    "Cpu": 512
+                }],
+                "Volumes": []
+            }
+        },
+        "service": {
+            "Type": "AWS::ECS::Service",
+            "Properties": {
+                "Cluster": {
+                    "Ref": "ECSCluster"
+                },
+                "DesiredCount": {
+                    "Ref": "ESCount"
+                },
+                "LoadBalancers": [{
+                    "ContainerName": "elasticsearch",
+                    "ContainerPort": "9200",
+                    "LoadBalancerName": {
+                        "Ref": "ESElasticLoadBalancer"
+                    }
+                }],
+                "Role": {
+                    "Ref": "ESServiceRole"
+                },
+                "TaskDefinition": {
+                    "Ref": "taskdefinition"
+                }
+            }
+        },
+        "ESElasticLoadBalancer": {
+            "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+            "Properties": {
+                "Scheme": "internal",
+                "Listeners": [{
+                    "LoadBalancerPort": "9200",
+                    "InstancePort": "9200",
+                    "InstanceProtocol": "HTTPS",
+                    "Protocol": "HTTPS",
+                    "SSLCertificateId": {
+                        "Ref": "CertificateARN"
+                    }
+                }],
+                "Subnets": {
+                    "Ref": "SubnetId"
+                },
+                "HealthCheck": {
+                    "Target": "HTTP:9201/elb-status",
+                    "HealthyThreshold": "3",
+                    "UnhealthyThreshold": "3",
+                    "Interval": "6",
+                    "Timeout": "5"
+                }
+            }
+        },
+        "ESServiceRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [{
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": [
+                                "ecs.amazonaws.com"
+                            ]
+                        },
+                        "Action": [
+                            "sts:AssumeRole"
+                        ]
+                    }]
+                },
+                "Path": "/",
+                "Policies": [{
+                    "PolicyName": "ecs-service",
+                    "PolicyDocument": {
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": [
+                                "elasticloadbalancing:Describe*",
+                                "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                                "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                                "ec2:Describe*",
+                                "ec2:AuthorizeSecurityGroupIngress"
+                            ],
+                            "Resource": "*"
+                        }]
+                    }
+                }]
+            }
+        }
+    },
+    "Outputs": {
+        "esservice": {
+            "Value": {
+                "Ref": "service"
+            }
+        },
+        "taskdef": {
+            "Value": {
+                "Ref": "taskdefinition"
+            }
+        },
+        "ESLoadBalancerDNSName": {
+            "Description": "The DNSName of the logstash load balancer",
+            "Value": {
+                "Fn::GetAtt": ["ESElasticLoadBalancer", "DNSName"]
+            }
+        }
+    }
+}
